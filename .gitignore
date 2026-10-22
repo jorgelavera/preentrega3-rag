@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Local config and generated data (never commit secrets or the vector index)
+.env
+vectorstore/
+
+# Local tooling state (SDD artifacts and skill registry)
+.atl/
+.engram/
+openspec/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS junk
+Thumbs.db
+.DS_Store
