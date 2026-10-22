@@ -23,12 +23,8 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from config import (
-    CHUNK_OVERLAP,
-    CHUNK_SIZE,
-    COLLECTION_NAME,
     DATA_DIR,
-    EMBEDDING_MODEL,
-    VECTORSTORE_DIR,
+    Settings,
     get_embeddings,
     load_settings,
 )
@@ -47,24 +43,38 @@ def token_length(text: str) -> int:
 
 
 def build_text_splitter(
-    chunk_size: int = CHUNK_SIZE + CHUNK_OVERLAP,
-    chunk_overlap: int = CHUNK_OVERLAP,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> RecursiveCharacterTextSplitter:
     """Build the shared token-aware recursive splitter.
 
     Separators are tried in order (paragraphs, lines, words, characters) so
     natural boundaries are respected whenever possible.
 
-    RecursiveCharacterTextSplitter counts the overlap inside ``chunk_size``, so
-    the window is ``CHUNK_SIZE + CHUNK_OVERLAP`` (550 tokens). A hard 500-token
-    cap left the average at ~381 tokens on this corpus because paragraph
-    boundaries rarely fill the window; 550 raises utilization while keeping the
-    context small and still centered on the required ~500-token chunks.
+    Defaults are resolved from ``load_settings()`` at call time (never from the
+    module-level constants) so the splitter always matches the values used for
+    collection metadata and retrieval. RecursiveCharacterTextSplitter counts the
+    overlap inside ``chunk_size``, so the default window is
+    ``settings.chunk_size + settings.chunk_overlap``. A hard ``chunk_size`` cap
+    left the average well below target on this corpus because paragraph
+    boundaries rarely fill the window; including the overlap raises utilization
+    while keeping the context small and still centered on the required
+    ~500-token chunks.
     """
+    settings = load_settings()
+    resolved_size = (
+        chunk_size
+        if chunk_size is not None
+        else settings.chunk_size + settings.chunk_overlap
+    )
+    resolved_overlap = (
+        chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
+    )
+
     return RecursiveCharacterTextSplitter(
         separators=["\n\n", "\n", " ", ""],
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        chunk_size=resolved_size,
+        chunk_overlap=resolved_overlap,
         length_function=token_length,
         add_start_index=True,
     )
@@ -143,6 +153,20 @@ def _collection_exists(client: chromadb.ClientAPI, name: str) -> bool:
     return True
 
 
+def _collection_metadata(settings: Settings) -> dict[str, str | int]:
+    """Describe how the collection was built, using the resolved settings.
+
+    Kept pure so the metadata contract can be tested without a ChromaDB client
+    or network access. The values MUST come from the same ``Settings`` used to
+    build the splitter; otherwise the index misreports its own configuration.
+    """
+    return {
+        "embedding_model": settings.embedding_model,
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+    }
+
+
 def get_vectorstore() -> Chroma:
     """Open the persistent Chroma collection used for both indexing and querying.
 
@@ -155,16 +179,15 @@ def get_vectorstore() -> Chroma:
         collection_name=settings.collection_name,
         persist_directory=str(settings.vectorstore_dir),
         embedding_function=get_embeddings(),
-        collection_metadata={
-            "embedding_model": settings.embedding_model,
-            "chunk_size": settings.chunk_size,
-            "chunk_overlap": settings.chunk_overlap,
-        },
+        collection_metadata=_collection_metadata(settings),
     )
 
 
 def ingest_documents(force_reindex: bool = False) -> dict:
     """Index the corpus into ChromaDB, skipping work when it is already indexed.
+
+    Every configuration value comes from a single ``load_settings()`` snapshot
+    so the splitter, collection metadata and printed summary cannot diverge.
 
     Args:
         force_reindex: delete the existing collection and rebuild it.
@@ -173,35 +196,36 @@ def ingest_documents(force_reindex: bool = False) -> dict:
         A structured summary with ``files``, ``chunks``, ``collection``,
         ``skipped`` and the resolved storage/embedding details.
     """
-    settings_vectorstore = VECTORSTORE_DIR
-    client = chromadb.PersistentClient(path=str(settings_vectorstore))
-    existing_vectors = _collection_vector_count(client, COLLECTION_NAME)
-    file_count = len(discover_files(DATA_DIR))
+    settings = load_settings()
+    client = chromadb.PersistentClient(path=str(settings.vectorstore_dir))
+    existing_vectors = _collection_vector_count(client, settings.collection_name)
+    file_count = len(discover_files(settings.data_dir))
 
     if existing_vectors > 0 and not force_reindex:
         summary = {
             "files": file_count,
             "chunks": existing_vectors,
-            "collection": COLLECTION_NAME,
+            "collection": settings.collection_name,
             "skipped": True,
-            "vectorstore_dir": str(settings_vectorstore),
-            "embedding_model": EMBEDDING_MODEL,
-            "chunk_size": CHUNK_SIZE,
-            "chunk_overlap": CHUNK_OVERLAP,
+            "vectorstore_dir": str(settings.vectorstore_dir),
+            "embedding_model": settings.embedding_model,
+            "chunk_size": settings.chunk_size,
+            "chunk_overlap": settings.chunk_overlap,
         }
         _print_summary(summary, existing_vectors)
         return summary
 
-    documents = load_documents(DATA_DIR)
-    settings = load_settings()
+    documents = load_documents(settings.data_dir)
 
-    if force_reindex and _collection_exists(client, COLLECTION_NAME):
-        client.delete_collection(COLLECTION_NAME)
-        print(f"Deleted existing collection '{COLLECTION_NAME}' (--force).")
+    if force_reindex and _collection_exists(client, settings.collection_name):
+        client.delete_collection(settings.collection_name)
+        print(f"Deleted existing collection '{settings.collection_name}' (--force).")
 
     chunks = split_documents(documents)
     if not chunks:
-        raise ValueError(f"Documents in {DATA_DIR} produced no chunks; check their content.")
+        raise ValueError(
+            f"Documents in {settings.data_dir} produced no chunks; check their content."
+        )
 
     # Same factory the query chain uses: one collection, one embedding function.
     vectorstore = get_vectorstore()

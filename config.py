@@ -1,8 +1,11 @@
 """Central configuration for the local RAG pipeline.
 
-This module is the only place where paths, model names, retrieval parameters and
-the embeddings client are defined. Both the ingestion script and the query chain
-import from here so their configuration can never drift apart.
+``load_settings()`` is the runtime source of truth: it reads the environment
+(and ``.env``) on every call, validates the values and returns an immutable
+``Settings`` object. The module-level constants below remain part of the public
+surface and act as import-time defaults, but runtime code (ingestion and query
+chain) reads every value through ``load_settings()`` so both sides cannot drift
+apart when an environment variable overrides a default.
 """
 
 from __future__ import annotations

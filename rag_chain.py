@@ -27,7 +27,7 @@ from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from config import NO_ANSWER_SENTINEL, TEMPERATURE, TOP_K, load_settings
+from config import NO_ANSWER_SENTINEL, TEMPERATURE, load_settings
 from ingest import get_vectorstore
 
 
@@ -118,11 +118,12 @@ def _ensure_vectorstore_ready(vectorstore: Chroma) -> None:
 
 @lru_cache(maxsize=1)
 def _get_retriever():
+    settings = load_settings()
     vectorstore = get_vectorstore()
     _ensure_vectorstore_ready(vectorstore)
     return vectorstore.as_retriever(
         search_type="similarity",
-        search_kwargs={"k": TOP_K},
+        search_kwargs={"k": settings.top_k},
     )
 
 
@@ -137,9 +138,16 @@ def format_documents(documents: Sequence[Document]) -> str:
 
 def _deduplicate_documents(
     documents: Sequence[Document],
-    limit: int = TOP_K,
+    limit: int | None = None,
 ) -> list[Document]:
-    """Keep at most ``limit`` unique chunks without inflating the context."""
+    """Keep at most ``limit`` unique chunks without inflating the context.
+
+    ``limit`` defaults to ``load_settings().top_k`` at call time so a value
+    captured at import time can never override the resolved configuration.
+    """
+    if limit is None:
+        limit = load_settings().top_k
+
     seen: set[tuple[str, object, str]] = set()
     unique: list[Document] = []
 
@@ -270,9 +278,10 @@ async def get_rag_response_with_context(
 
 async def _retrieve_with_scores(query: str) -> list[tuple[Document, float]]:
     """Fetch chunks with their Chroma distance, for demo diagnostics only."""
+    settings = load_settings()
     vectorstore = get_vectorstore()
     _ensure_vectorstore_ready(vectorstore)
-    return await vectorstore.asimilarity_search_with_score(query, k=TOP_K)
+    return await vectorstore.asimilarity_search_with_score(query, k=settings.top_k)
 
 
 async def _run_demo() -> None:
